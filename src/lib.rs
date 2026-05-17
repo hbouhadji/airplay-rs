@@ -71,6 +71,7 @@ impl VideoSource {
         use gstreamer_video::prelude::*;
 
         gst::init().expect("failed to initialize GStreamer");
+        register_android_gstreamer_plugins();
 
         let handle = native_window_handle(window);
         let pipeline = gst::parse::launch(
@@ -112,6 +113,20 @@ impl VideoSource {
         self.overlay.expose();
     }
 }
+
+#[cfg(target_os = "android")]
+fn register_android_gstreamer_plugins() {
+    unsafe extern "C" {
+        fn gst_plugin_opengl_register();
+    }
+
+    unsafe {
+        gst_plugin_opengl_register();
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn register_android_gstreamer_plugins() {}
 
 impl Drop for VideoSource {
     fn drop(&mut self) {
