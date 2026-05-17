@@ -3,5 +3,9 @@ name = "winit-gstreamer"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "main"
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
-winit = "0.30.13"
+winit = { version = "0.30.13", features = ["android-native-activity"] }
