@@ -9,3 +9,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 winit = { version = "0.30.13", features = ["android-native-activity"] }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+gstreamer = "0.25.2"
+gstreamer-video = "0.25.2"
