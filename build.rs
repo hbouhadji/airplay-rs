@@ -7,7 +7,7 @@ fn main() {
 
     let gstreamer_root = env::var_os("GSTREAMER_ROOT_ANDROID")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/Volumes/990PRO/deps/gstreamer/arm64"));
+        .unwrap();
 
     println!("cargo:rerun-if-env-changed=GSTREAMER_ROOT_ANDROID");
     println!("cargo:rerun-if-env-changed=ANDROID_NDK_ROOT");
