@@ -32,6 +32,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "airplay-rs"
+version = "0.1.0"
+dependencies = [
+ "gstreamer",
+ "gstreamer-video",
+ "winit",
+]
+
+[[package]]
 name = "android-activity"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1968,15 +1977,6 @@ dependencies = [
  "x11-dl",
  "x11rb",
  "xkbcommon-dl",
-]
-
-[[package]]
-name = "winit-gstreamer"
-version = "0.1.0"
-dependencies = [
- "gstreamer",
- "gstreamer-video",
- "winit",
 ]
 
 [[package]]

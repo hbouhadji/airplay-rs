@@ -20,7 +20,7 @@ impl ApplicationHandler for App {
         let window = event_loop
             .create_window(
                 WindowAttributes::default()
-                    .with_title("winit + gstreamer native sink")
+                    .with_title("airplay-rs")
                     .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0)),
             )
             .expect("failed to create window");
