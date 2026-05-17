@@ -59,13 +59,11 @@ impl ApplicationHandler for App {
     }
 }
 
-#[cfg(not(target_os = "android"))]
 struct VideoSource {
     pipeline: gstreamer::Pipeline,
     overlay: gstreamer_video::VideoOverlay,
 }
 
-#[cfg(not(target_os = "android"))]
 impl VideoSource {
     fn start(window: &Window) -> Self {
         use gstreamer as gst;
@@ -115,7 +113,6 @@ impl VideoSource {
     }
 }
 
-#[cfg(not(target_os = "android"))]
 impl Drop for VideoSource {
     fn drop(&mut self) {
         use gstreamer as gst;
@@ -125,7 +122,6 @@ impl Drop for VideoSource {
     }
 }
 
-#[cfg(not(target_os = "android"))]
 fn native_window_handle(window: &Window) -> usize {
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
@@ -139,22 +135,9 @@ fn native_window_handle(window: &Window) -> usize {
         RawWindowHandle::Xlib(handle) => handle.window as usize,
         RawWindowHandle::Xcb(handle) => handle.window.get() as usize,
         RawWindowHandle::Wayland(handle) => handle.surface.as_ptr() as usize,
+        RawWindowHandle::AndroidNdk(handle) => handle.a_native_window.as_ptr() as usize,
         other => panic!("unsupported native window handle for GstVideoOverlay: {other:?}"),
     }
-}
-
-#[cfg(target_os = "android")]
-struct VideoSource;
-
-#[cfg(target_os = "android")]
-impl VideoSource {
-    fn start(_window: &Window) -> Self {
-        Self
-    }
-
-    fn resize(&self, _size: PhysicalSize<u32>) {}
-
-    fn expose(&self) {}
 }
 
 pub fn run(event_loop: EventLoop<()>) -> Result<(), winit::error::EventLoopError> {
