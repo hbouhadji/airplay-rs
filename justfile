@@ -1,7 +1,6 @@
 set dotenv-load := true
 set dotenv-filename := ".env"
 
-android-home := env("ANDROID_HOME")
 android-ndk-root := env("ANDROID_NDK_ROOT")
 gstreamer-android-root := env("GSTREAMER_ROOT_ANDROID")
 
