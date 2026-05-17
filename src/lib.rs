@@ -1,6 +1,5 @@
 use winit::{
     application::ApplicationHandler,
-    dpi::PhysicalSize,
     event::WindowEvent,
     event_loop::EventLoop,
     window::{Window, WindowAttributes},
@@ -38,15 +37,16 @@ impl ApplicationHandler for App {
     ) {
         match event {
             WindowEvent::CloseRequested => {
-                self.video = None;
                 event_loop.exit();
             }
             WindowEvent::Resized(size) => {
-                if let Some(video) = self.video.as_ref() {
-                    video.resize(size);
-                }
-                if let Some(window) = self.window.as_ref() {
-                    window.request_redraw();
+                if size.width > 0 && size.height > 0 {
+                    if let Some(video) = self.video.as_ref() {
+                        video.expose();
+                    }
+                    if let Some(window) = self.window.as_ref() {
+                        window.request_redraw();
+                    }
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -57,11 +57,17 @@ impl ApplicationHandler for App {
             _ => {}
         }
     }
+
+    fn exiting(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
+        if let Some(video) = self.video.take() {
+            video.stop();
+        }
+        self.window = None;
+    }
 }
 
 struct VideoSource {
     pipeline: gstreamer::Pipeline,
-    overlay: gstreamer_video::VideoOverlay,
 }
 
 impl VideoSource {
@@ -82,11 +88,7 @@ impl VideoSource {
         .downcast::<gst::Pipeline>()
         .expect("GStreamer launch did not create a pipeline");
 
-        let sink = pipeline.by_name("video_sink").expect("missing video sink");
-        let overlay = sink
-            .dynamic_cast::<gstreamer_video::VideoOverlay>()
-            .expect("video sink does not implement GstVideoOverlay");
-
+        let overlay = video_overlay(&pipeline);
         unsafe {
             overlay.set_window_handle(handle);
         }
@@ -96,22 +98,35 @@ impl VideoSource {
             .set_state(gst::State::Playing)
             .expect("failed to start GStreamer pipeline");
 
-        Self { pipeline, overlay }
-    }
-
-    fn resize(&self, size: PhysicalSize<u32>) {
-        if size.width == 0 || size.height == 0 {
-            return;
-        }
-
-        self.expose();
+        Self { pipeline }
     }
 
     fn expose(&self) {
         use gstreamer_video::prelude::VideoOverlayExt;
 
-        self.overlay.expose();
+        video_overlay(&self.pipeline).expose();
     }
+
+    fn stop(self) {
+        use gstreamer as gst;
+        use gstreamer::prelude::*;
+
+        let this = std::mem::ManuallyDrop::new(self);
+        let _ = this.pipeline.set_state(gst::State::Null);
+        let _ = this.pipeline.state(gst::ClockTime::from_seconds(2));
+        // Avoid a macOS glimagesink crash in the final GObject unref during app shutdown.
+        std::mem::forget(this);
+    }
+}
+
+fn video_overlay(pipeline: &gstreamer::Pipeline) -> gstreamer_video::VideoOverlay {
+    use gstreamer::prelude::*;
+
+    pipeline
+        .by_name("video_sink")
+        .expect("missing video sink")
+        .dynamic_cast::<gstreamer_video::VideoOverlay>()
+        .expect("video sink does not implement GstVideoOverlay")
 }
 
 #[cfg(target_os = "android")]
@@ -134,6 +149,7 @@ impl Drop for VideoSource {
         use gstreamer::prelude::*;
 
         let _ = self.pipeline.set_state(gst::State::Null);
+        let _ = self.pipeline.state(gst::ClockTime::from_seconds(2));
     }
 }
 
