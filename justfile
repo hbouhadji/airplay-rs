@@ -1,22 +1,21 @@
 set dotenv-load := true
 set dotenv-filename := ".env"
 
-android-ndk-root := env("ANDROID_NDK_ROOT")
-gstreamer-android-root := env("GSTREAMER_ROOT_ANDROID")
-
-export PKG_CONFIG_PATH := gstreamer-android-root / "lib/pkgconfig" + ":" + gstreamer-android-root / "lib/gstreamer-1.0/pkgconfig"
-
 run-desktop:
     cargo run
 
 check-desktop:
     cargo check
 
-build-android:
-    cargo apk build --lib
+build-android: _android
+    PKG_CONFIG_PATH="$GSTREAMER_ROOT_ANDROID/lib/pkgconfig:$GSTREAMER_ROOT_ANDROID/lib/gstreamer-1.0/pkgconfig" cargo apk build --lib
 
-run-android:
-    cargo apk run --lib
+run-android: _android
+    PKG_CONFIG_PATH="$GSTREAMER_ROOT_ANDROID/lib/pkgconfig:$GSTREAMER_ROOT_ANDROID/lib/gstreamer-1.0/pkgconfig" cargo apk run --lib
 
-check-android:
-    cargo apk check --lib
+check-android: _android
+    PKG_CONFIG_PATH="$GSTREAMER_ROOT_ANDROID/lib/pkgconfig:$GSTREAMER_ROOT_ANDROID/lib/gstreamer-1.0/pkgconfig" cargo apk check --lib
+
+_android:
+    @test -n "${GSTREAMER_ROOT_ANDROID:-}" || (echo "GSTREAMER_ROOT_ANDROID is not set" >&2; exit 1)
+    @test -n "${ANDROID_NDK_ROOT:-}" || (echo "ANDROID_NDK_ROOT is not set" >&2; exit 1)
