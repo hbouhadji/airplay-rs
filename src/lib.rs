@@ -45,6 +45,14 @@ impl ApplicationHandler for App {
                 if let Some(video) = self.video.as_ref() {
                     video.resize(size);
                 }
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+            }
+            WindowEvent::RedrawRequested => {
+                if let Some(video) = self.video.as_ref() {
+                    video.expose();
+                }
             }
             _ => {}
         }
@@ -84,7 +92,6 @@ impl VideoSource {
             overlay.set_window_handle(handle);
         }
         overlay.handle_events(true);
-        set_render_rectangle(&overlay, window.inner_size());
 
         pipeline
             .set_state(gst::State::Playing)
@@ -94,9 +101,16 @@ impl VideoSource {
     }
 
     fn resize(&self, size: PhysicalSize<u32>) {
+        if size.width == 0 || size.height == 0 {
+            return;
+        }
+
+        self.expose();
+    }
+
+    fn expose(&self) {
         use gstreamer_video::prelude::VideoOverlayExt;
 
-        set_render_rectangle(&self.overlay, size);
         self.overlay.expose();
     }
 }
@@ -109,17 +123,6 @@ impl Drop for VideoSource {
 
         let _ = self.pipeline.set_state(gst::State::Null);
     }
-}
-
-#[cfg(not(target_os = "android"))]
-fn set_render_rectangle(overlay: &gstreamer_video::VideoOverlay, size: PhysicalSize<u32>) {
-    use gstreamer_video::prelude::*;
-
-    if size.width == 0 || size.height == 0 {
-        return;
-    }
-
-    let _ = overlay.set_render_rectangle(0, 0, size.width as i32, size.height as i32);
 }
 
 #[cfg(not(target_os = "android"))]
@@ -150,6 +153,8 @@ impl VideoSource {
     }
 
     fn resize(&self, _size: PhysicalSize<u32>) {}
+
+    fn expose(&self) {}
 }
 
 pub fn run(event_loop: EventLoop<()>) -> Result<(), winit::error::EventLoopError> {
