@@ -25,20 +25,26 @@ use rairplay::{
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
-    event_loop::EventLoop,
+    event_loop::{EventLoop, EventLoopProxy},
     window::{Window, WindowAttributes},
 };
 
 mod discovery;
+
+#[doc(hidden)]
+pub enum AppEvent {
+    VideoCommandQueued,
+}
 
 #[derive(Default)]
 struct App {
     window: Option<Window>,
     video: Option<VideoSource>,
     airplay: Option<AirPlayServer>,
+    proxy: Option<EventLoopProxy<AppEvent>>,
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<AppEvent> for App {
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -52,7 +58,13 @@ impl ApplicationHandler for App {
             )
             .expect("failed to create window");
 
-        let video = VideoSource::start(&window);
+        let video = VideoSource::start(
+            &window,
+            self.proxy
+                .as_ref()
+                .expect("event loop proxy must be initialized")
+                .clone(),
+        );
         self.airplay = Some(AirPlayServer::start(video.device()));
         self.video = Some(video);
         self.window = Some(window);
@@ -87,6 +99,19 @@ impl ApplicationHandler for App {
         }
     }
 
+    fn user_event(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop, event: AppEvent) {
+        match event {
+            AppEvent::VideoCommandQueued => {
+                if let Some(video) = self.video.as_mut() {
+                    video.drain_commands();
+                }
+                if let Some(window) = self.window.as_ref() {
+                    window.request_redraw();
+                }
+            }
+        }
+    }
+
     fn about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
         if let Some(video) = self.video.as_mut() {
             video.drain_commands();
@@ -110,14 +135,14 @@ struct VideoSource {
 }
 
 impl VideoSource {
-    fn start(window: &Window) -> Self {
+    fn start(window: &Window, proxy: EventLoopProxy<AppEvent>) -> Self {
         init_gstreamer().expect("failed to initialize GStreamer");
         register_android_gstreamer_plugins();
 
         let handle = native_window_handle(window);
         let (sender, receiver) = mpsc::channel();
         Self {
-            device: AirPlayVideoDevice::new(sender),
+            device: AirPlayVideoDevice::new(sender, proxy),
             receiver,
             pipeline: None,
             window_handle: Some(handle as u64),
@@ -170,11 +195,12 @@ impl VideoSource {
 #[derive(Clone)]
 struct AirPlayVideoDevice {
     sender: Sender<VideoCommand>,
+    proxy: EventLoopProxy<AppEvent>,
 }
 
 impl AirPlayVideoDevice {
-    fn new(sender: Sender<VideoCommand>) -> Self {
-        Self { sender }
+    fn new(sender: Sender<VideoCommand>, proxy: EventLoopProxy<AppEvent>) -> Self {
+        Self { sender, proxy }
     }
 }
 
@@ -192,6 +218,7 @@ impl Device for AirPlayVideoDevice {
         Ok(AirPlayVideoStream {
             id,
             sender: self.sender.clone(),
+            proxy: self.proxy.clone(),
         })
     }
 }
@@ -201,6 +228,7 @@ impl VideoDevice for AirPlayVideoDevice {}
 struct AirPlayVideoStream {
     id: u64,
     sender: Sender<VideoCommand>,
+    proxy: EventLoopProxy<AppEvent>,
 }
 
 impl Stream for AirPlayVideoStream {
@@ -245,7 +273,9 @@ impl AirPlayVideoStream {
     fn send_command(&self, command: VideoCommand) -> Result<(), GStreamerVideoError> {
         self.sender
             .send(command)
-            .map_err(|error| GStreamerVideoError::new(error.to_string()))
+            .map_err(|error| GStreamerVideoError::new(error.to_string()))?;
+        let _ = self.proxy.send_event(AppEvent::VideoCommandQueued);
+        Ok(())
     }
 }
 
@@ -575,8 +605,11 @@ fn native_window_handle(window: &Window) -> usize {
     }
 }
 
-pub fn run(event_loop: EventLoop<()>) -> Result<(), winit::error::EventLoopError> {
-    let mut app = App::default();
+pub fn run(event_loop: EventLoop<AppEvent>) -> Result<(), winit::error::EventLoopError> {
+    let mut app = App {
+        proxy: Some(event_loop.create_proxy()),
+        ..Default::default()
+    };
     event_loop.run_app(&mut app)
 }
 
@@ -585,7 +618,7 @@ pub fn run(event_loop: EventLoop<()>) -> Result<(), winit::error::EventLoopError
 pub fn android_main(app: winit::platform::android::activity::AndroidApp) {
     use winit::platform::android::EventLoopBuilderExtAndroid;
 
-    let event_loop = EventLoop::builder()
+    let event_loop = EventLoop::<AppEvent>::with_user_event()
         .with_android_app(app)
         .build()
         .expect("failed to create Android event loop");
