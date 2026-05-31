@@ -9,6 +9,12 @@ name = "main"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+axum = "0.8"
 gstreamer = "0.25.2"
+gstreamer-app = "0.25.2"
 gstreamer-video = "0.25.2"
+mdns-sd = "0.19.2"
+rairplay = "1.0.0"
+tokio = "1"
+tracing-subscriber = "0.3"
 winit = { version = "0.30.13", features = ["android-native-activity"] }
