@@ -189,6 +189,8 @@ enum VideoPipeline {
     Native(macos::MacOsVideoPipeline),
     #[cfg(any(not(target_os = "macos"), feature = "macos-gstreamer"))]
     GStreamer(gstreamer::GStreamerPipeline),
+    #[cfg(all(target_os = "macos", feature = "macos-gstreamer"))]
+    SideBySide(SideBySideVideoPipeline),
 }
 
 impl VideoPipeline {
@@ -236,6 +238,39 @@ impl VideoPipeline {
                     ))
                 }
             }
+            VideoBackend::SideBySide => {
+                #[cfg(all(target_os = "macos", feature = "macos-gstreamer"))]
+                {
+                    let views = macos::SideBySideViews::create(
+                        window_handle
+                            .ok_or_else(|| VideoError::new("missing AppKit view handle"))?,
+                    )?;
+                    let native_handle = views.native_handle();
+                    let gstreamer_handle = views.gstreamer_handle();
+
+                    Ok(Self::SideBySide(SideBySideVideoPipeline {
+                        views,
+                        native: macos::MacOsVideoPipeline::start(
+                            codec,
+                            codec_data.as_ref().to_vec(),
+                            Some(native_handle),
+                        )?,
+                        gstreamer: gstreamer::GStreamerPipeline::start(
+                            codec,
+                            codec_data,
+                            Some(gstreamer_handle),
+                        )?,
+                    }))
+                }
+
+                #[cfg(not(all(target_os = "macos", feature = "macos-gstreamer")))]
+                {
+                    let _ = (codec, codec_data, window_handle);
+                    Err(VideoError::new(
+                        "side-by-side backend requires macOS and the 'macos-gstreamer' feature",
+                    ))
+                }
+            }
         }
     }
 
@@ -245,6 +280,8 @@ impl VideoPipeline {
             Self::Native(pipeline) => pipeline.push_payload(payload),
             #[cfg(any(not(target_os = "macos"), feature = "macos-gstreamer"))]
             Self::GStreamer(pipeline) => pipeline.push_payload(payload),
+            #[cfg(all(target_os = "macos", feature = "macos-gstreamer"))]
+            Self::SideBySide(pipeline) => pipeline.push_payload(payload),
         }
     }
 
@@ -254,7 +291,37 @@ impl VideoPipeline {
             Self::Native(pipeline) => pipeline.stop(),
             #[cfg(any(not(target_os = "macos"), feature = "macos-gstreamer"))]
             Self::GStreamer(pipeline) => pipeline.stop(),
+            #[cfg(all(target_os = "macos", feature = "macos-gstreamer"))]
+            Self::SideBySide(pipeline) => pipeline.stop(),
         }
+    }
+}
+
+#[cfg(all(target_os = "macos", feature = "macos-gstreamer"))]
+struct SideBySideVideoPipeline {
+    views: macos::SideBySideViews,
+    native: macos::MacOsVideoPipeline,
+    gstreamer: gstreamer::GStreamerPipeline,
+}
+
+#[cfg(all(target_os = "macos", feature = "macos-gstreamer"))]
+impl SideBySideVideoPipeline {
+    fn push_payload(&mut self, payload: &[u8]) -> Result<(), VideoError> {
+        self.views.layout();
+        self.native.push_payload(payload)?;
+        self.gstreamer.push_payload(payload)?;
+        Ok(())
+    }
+
+    fn stop(self) {
+        let Self {
+            views,
+            native,
+            gstreamer,
+        } = self;
+        native.stop();
+        gstreamer.stop();
+        views.remove_from_parent();
     }
 }
 

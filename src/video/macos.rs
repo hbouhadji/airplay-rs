@@ -1,5 +1,89 @@
 use super::{Codec, VideoError};
 
+#[cfg(feature = "macos-gstreamer")]
+pub(super) struct SideBySideViews {
+    parent: objc2::rc::Retained<objc2_app_kit::NSView>,
+    native: objc2::rc::Retained<objc2_app_kit::NSView>,
+    gstreamer: objc2::rc::Retained<objc2_app_kit::NSView>,
+}
+
+#[cfg(feature = "macos-gstreamer")]
+impl SideBySideViews {
+    pub(super) fn create(parent_handle: u64) -> Result<Self, VideoError> {
+        use objc2::rc::Retained;
+        use objc2_app_kit::{NSAutoresizingMaskOptions, NSView};
+        use objc2_foundation::{CGPoint, CGRect, CGSize, MainThreadMarker};
+
+        let mtm = MainThreadMarker::new()
+            .ok_or_else(|| VideoError::new("side-by-side views must be created on main thread"))?;
+
+        let parent = unsafe {
+            Retained::retain(parent_handle as *mut NSView)
+                .ok_or_else(|| VideoError::new("failed to retain parent NSView"))?
+        };
+        let bounds = parent.bounds();
+        let half_width = bounds.size.width / 2.0;
+        let left_frame = CGRect::new(bounds.origin, CGSize::new(half_width, bounds.size.height));
+        let right_frame = CGRect::new(
+            CGPoint::new(bounds.origin.x + half_width, bounds.origin.y),
+            CGSize::new(bounds.size.width - half_width, bounds.size.height),
+        );
+
+        let native = unsafe { NSView::initWithFrame(mtm.alloc(), left_frame) };
+        let gstreamer = unsafe { NSView::initWithFrame(mtm.alloc(), right_frame) };
+        let resize_mask = NSAutoresizingMaskOptions::NSViewWidthSizable
+            | NSAutoresizingMaskOptions::NSViewHeightSizable;
+
+        unsafe {
+            parent.setAutoresizesSubviews(false);
+            native.setAutoresizingMask(resize_mask);
+            gstreamer.setAutoresizingMask(resize_mask);
+            parent.addSubview(&native);
+            parent.addSubview(&gstreamer);
+        }
+
+        let views = Self {
+            parent,
+            native,
+            gstreamer,
+        };
+        views.layout();
+        Ok(views)
+    }
+
+    pub(super) fn native_handle(&self) -> u64 {
+        (&*self.native as *const objc2_app_kit::NSView) as u64
+    }
+
+    pub(super) fn gstreamer_handle(&self) -> u64 {
+        (&*self.gstreamer as *const objc2_app_kit::NSView) as u64
+    }
+
+    pub(super) fn layout(&self) {
+        use objc2_foundation::{CGPoint, CGRect, CGSize};
+
+        let bounds = self.parent.bounds();
+        let half_width = bounds.size.width / 2.0;
+        let left_frame = CGRect::new(bounds.origin, CGSize::new(half_width, bounds.size.height));
+        let right_frame = CGRect::new(
+            CGPoint::new(bounds.origin.x + half_width, bounds.origin.y),
+            CGSize::new(bounds.size.width - half_width, bounds.size.height),
+        );
+
+        unsafe {
+            self.native.setFrame(left_frame);
+            self.gstreamer.setFrame(right_frame);
+        }
+    }
+
+    pub(super) fn remove_from_parent(self) {
+        unsafe {
+            self.native.removeFromSuperview();
+            self.gstreamer.removeFromSuperview();
+        }
+    }
+}
+
 pub(super) struct MacOsVideoPipeline {
     layer: objc2::rc::Retained<objc2::runtime::AnyObject>,
     format_description: CoreMediaRef<CMFormatDescription>,

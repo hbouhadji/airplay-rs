@@ -5,6 +5,7 @@ pub enum VideoBackend {
     Auto,
     Native,
     GStreamer,
+    SideBySide,
 }
 
 impl Default for VideoBackend {
@@ -38,9 +39,11 @@ impl VideoBackend {
                 backend = Self::Native;
             } else if arg == "--gstreamer-video" {
                 backend = Self::GStreamer;
+            } else if arg == "--side-by-side-video" || arg == "--dual-video" {
+                backend = Self::SideBySide;
             } else {
                 return Err(invalid_input(format!(
-                    "unknown argument '{arg}'. Use --video-backend auto|native|gstreamer"
+                    "unknown argument '{arg}'. Use --video-backend auto|native|gstreamer|side-by-side"
                 )));
             }
         }
@@ -61,8 +64,9 @@ impl VideoBackend {
             "auto" => Ok(Self::Auto),
             "native" | "macos" | "avfoundation" => Ok(Self::Native),
             "gstreamer" | "gst" => Ok(Self::GStreamer),
+            "side-by-side" | "side_by_side" | "both" | "dual" => Ok(Self::SideBySide),
             other => Err(invalid_input(format!(
-                "unknown video backend '{other}'. Expected auto, native, or gstreamer"
+                "unknown video backend '{other}'. Expected auto, native, gstreamer, or side-by-side"
             ))),
         }
     }
@@ -93,6 +97,26 @@ impl VideoBackend {
                 {
                     Err(invalid_input(
                         "GStreamer backend requested, but this binary was built without the 'macos-gstreamer' feature",
+                    ))
+                }
+            }
+            Self::SideBySide => {
+                #[cfg(all(target_os = "macos", feature = "macos-gstreamer"))]
+                {
+                    Ok(())
+                }
+
+                #[cfg(all(target_os = "macos", not(feature = "macos-gstreamer")))]
+                {
+                    Err(invalid_input(
+                        "side-by-side backend requested, but this binary was built without the 'macos-gstreamer' feature",
+                    ))
+                }
+
+                #[cfg(not(target_os = "macos"))]
+                {
+                    Err(invalid_input(
+                        "side-by-side backend is only available on macOS",
                     ))
                 }
             }

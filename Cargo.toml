@@ -29,3 +29,5 @@ gstreamer = { version = "0.25.2", optional = true }
 gstreamer-app = { version = "0.25.2", optional = true }
 gstreamer-video = { version = "0.25.2", optional = true }
 objc2 = "0.5.2"
+objc2-app-kit = { version = "0.2.2", features = ["NSResponder", "NSView"] }
+objc2-foundation = { version = "0.2.2", features = ["NSGeometry"] }
