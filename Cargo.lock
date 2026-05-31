@@ -62,6 +62,7 @@ dependencies = [
  "gstreamer-app",
  "gstreamer-video",
  "mdns-sd",
+ "objc2",
  "rairplay",
  "tokio",
  "tracing-subscriber",
