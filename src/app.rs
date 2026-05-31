@@ -1,3 +1,5 @@
+use std::{error::Error, path::PathBuf, thread::JoinHandle};
+
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
@@ -16,8 +18,92 @@ struct App {
     window: Option<Window>,
     video: Option<VideoSource>,
     airplay: Option<AirPlayServer>,
+    replay: Option<JoinHandle<()>>,
     proxy: Option<EventLoopProxy<AppEvent>>,
-    video_backend: VideoBackend,
+    options: RunOptions,
+}
+
+#[derive(Debug, Clone)]
+pub struct RunOptions {
+    pub video_backend: VideoBackend,
+    pub input: VideoInput,
+}
+
+#[derive(Debug, Clone)]
+pub enum VideoInput {
+    Live { capture_path: Option<PathBuf> },
+    Replay { path: PathBuf },
+}
+
+impl Default for RunOptions {
+    fn default() -> Self {
+        Self {
+            video_backend: VideoBackend::Auto,
+            input: VideoInput::Live { capture_path: None },
+        }
+    }
+}
+
+impl RunOptions {
+    pub fn from_env_and_args<I, S>(args: I) -> Result<Self, Box<dyn Error>>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let mut options = Self {
+            video_backend: match std::env::var("AIRPLAY_RS_VIDEO_BACKEND") {
+                Ok(value) => VideoBackend::parse_name(&value)?,
+                Err(std::env::VarError::NotPresent) => VideoBackend::Auto,
+                Err(error) => return Err(Box::new(error)),
+            },
+            input: env_input_mode()?,
+        };
+
+        let mut args = args.into_iter().map(Into::into);
+        while let Some(arg) = args.next() {
+            if let Some(value) = arg.strip_prefix("--video-backend=") {
+                options.video_backend = VideoBackend::parse_name(value)?;
+            } else if arg == "--video-backend" {
+                let Some(value) = args.next() else {
+                    return Err(invalid_input("--video-backend requires a value"));
+                };
+                options.video_backend = VideoBackend::parse_name(&value)?;
+            } else if arg == "--native-video" {
+                options.video_backend = VideoBackend::Native;
+            } else if arg == "--gstreamer-video" {
+                options.video_backend = VideoBackend::GStreamer;
+            } else if arg == "--side-by-side-video" || arg == "--dual-video" {
+                options.video_backend = VideoBackend::SideBySide;
+            } else if let Some(value) = arg
+                .strip_prefix("--capture-video=")
+                .or_else(|| arg.strip_prefix("--capture="))
+            {
+                set_capture_path(&mut options, PathBuf::from(value))?;
+            } else if arg == "--capture-video" || arg == "--capture" {
+                let Some(value) = args.next() else {
+                    return Err(invalid_input("--capture-video requires a path"));
+                };
+                set_capture_path(&mut options, PathBuf::from(value))?;
+            } else if let Some(value) = arg
+                .strip_prefix("--replay-video=")
+                .or_else(|| arg.strip_prefix("--replay="))
+            {
+                set_replay_path(&mut options, PathBuf::from(value))?;
+            } else if arg == "--replay-video" || arg == "--replay" {
+                let Some(value) = args.next() else {
+                    return Err(invalid_input("--replay-video requires a path"));
+                };
+                set_replay_path(&mut options, PathBuf::from(value))?;
+            } else {
+                return Err(invalid_input(format!(
+                    "unknown argument '{arg}'. Use --video-backend auto|native|gstreamer|side-by-side, --capture-video PATH, or --replay-video PATH"
+                )));
+            }
+        }
+
+        options.video_backend.ensure_available()?;
+        Ok(options)
+    }
 }
 
 impl ApplicationHandler<AppEvent> for App {
@@ -40,9 +126,28 @@ impl ApplicationHandler<AppEvent> for App {
                 .as_ref()
                 .expect("event loop proxy must be initialized")
                 .clone(),
-            self.video_backend,
+            self.options.video_backend,
+            match &self.options.input {
+                VideoInput::Live { capture_path } => capture_path.as_deref(),
+                VideoInput::Replay { .. } => None,
+            },
         );
-        self.airplay = Some(AirPlayServer::start(video.device()));
+        match &self.options.input {
+            VideoInput::Live { .. } => {
+                self.airplay = Some(AirPlayServer::start(video.device()));
+            }
+            VideoInput::Replay { path } => {
+                self.replay = Some(
+                    video.start_replay(
+                        path.clone(),
+                        self.proxy
+                            .as_ref()
+                            .expect("event loop proxy must be initialized")
+                            .clone(),
+                    ),
+                );
+            }
+        }
         self.video = Some(video);
         self.window = Some(window);
     }
@@ -99,6 +204,7 @@ impl ApplicationHandler<AppEvent> for App {
         if let Some(video) = self.video.take() {
             video.stop();
         }
+        self.replay = None;
         self.airplay = None;
         self.window = None;
     }
@@ -112,10 +218,81 @@ pub fn run_with_video_backend(
     event_loop: EventLoop<AppEvent>,
     video_backend: VideoBackend,
 ) -> Result<(), winit::error::EventLoopError> {
+    run_with_options(
+        event_loop,
+        RunOptions {
+            video_backend,
+            ..Default::default()
+        },
+    )
+}
+
+pub fn run_with_options(
+    event_loop: EventLoop<AppEvent>,
+    options: RunOptions,
+) -> Result<(), winit::error::EventLoopError> {
     let mut app = App {
         proxy: Some(event_loop.create_proxy()),
-        video_backend,
+        options,
         ..Default::default()
     };
     event_loop.run_app(&mut app)
+}
+
+fn env_input_mode() -> Result<VideoInput, Box<dyn Error>> {
+    let capture_path = optional_env_path("AIRPLAY_RS_CAPTURE_PATH")?;
+    let replay_path = optional_env_path("AIRPLAY_RS_REPLAY_PATH")?;
+
+    match (capture_path, replay_path) {
+        (Some(_), Some(_)) => Err(invalid_input(
+            "AIRPLAY_RS_CAPTURE_PATH and AIRPLAY_RS_REPLAY_PATH cannot both be set",
+        )),
+        (Some(capture_path), None) => Ok(VideoInput::Live {
+            capture_path: Some(capture_path),
+        }),
+        (None, Some(path)) => Ok(VideoInput::Replay { path }),
+        (None, None) => Ok(VideoInput::Live { capture_path: None }),
+    }
+}
+
+fn optional_env_path(name: &str) -> Result<Option<PathBuf>, Box<dyn Error>> {
+    match std::env::var(name) {
+        Ok(value) => Ok(Some(PathBuf::from(value))),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(error) => Err(Box::new(error)),
+    }
+}
+
+fn set_capture_path(options: &mut RunOptions, path: PathBuf) -> Result<(), Box<dyn Error>> {
+    if matches!(options.input, VideoInput::Replay { .. }) {
+        return Err(invalid_input(
+            "--capture-video and --replay-video cannot be used together",
+        ));
+    }
+    options.input = VideoInput::Live {
+        capture_path: Some(path),
+    };
+    Ok(())
+}
+
+fn set_replay_path(options: &mut RunOptions, path: PathBuf) -> Result<(), Box<dyn Error>> {
+    if matches!(
+        options.input,
+        VideoInput::Live {
+            capture_path: Some(_)
+        }
+    ) {
+        return Err(invalid_input(
+            "--capture-video and --replay-video cannot be used together",
+        ));
+    }
+    options.input = VideoInput::Replay { path };
+    Ok(())
+}
+
+fn invalid_input(message: impl Into<String>) -> Box<dyn Error> {
+    Box::new(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        message.into(),
+    ))
 }

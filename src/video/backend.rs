@@ -59,7 +59,7 @@ impl VideoBackend {
         }
     }
 
-    fn parse_name(value: &str) -> Result<Self, Box<dyn Error>> {
+    pub(crate) fn parse_name(value: &str) -> Result<Self, Box<dyn Error>> {
         match value {
             "auto" => Ok(Self::Auto),
             "native" | "macos" | "avfoundation" => Ok(Self::Native),
@@ -71,7 +71,7 @@ impl VideoBackend {
         }
     }
 
-    fn ensure_available(self) -> Result<(), Box<dyn Error>> {
+    pub(crate) fn ensure_available(self) -> Result<(), Box<dyn Error>> {
         match self.resolved() {
             Self::Auto => unreachable!("video backend must be resolved before availability check"),
             Self::Native => {

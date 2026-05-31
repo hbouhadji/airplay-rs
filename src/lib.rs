@@ -8,7 +8,7 @@ pub enum AppEvent {
     VideoCommandQueued,
 }
 
-pub use app::{run, run_with_video_backend};
+pub use app::{RunOptions, VideoInput, run, run_with_options, run_with_video_backend};
 pub use video::VideoBackend;
 
 #[cfg(target_os = "android")]

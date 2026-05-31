@@ -1,4 +1,5 @@
 mod backend;
+mod capture;
 mod codec;
 
 #[cfg(any(not(target_os = "macos"), feature = "macos-gstreamer"))]
@@ -10,10 +11,13 @@ use std::{
     convert::Infallible,
     error::Error,
     fmt,
+    path::{Path, PathBuf},
     sync::{
         Weak,
         mpsc::{self, Receiver, Sender},
     },
+    thread::JoinHandle,
+    time::Instant,
 };
 
 use rairplay::playback::{
@@ -23,6 +27,7 @@ use rairplay::playback::{
 use winit::{event_loop::EventLoopProxy, window::Window};
 
 pub use backend::VideoBackend;
+use capture::{CapturePacketKind, CaptureWriter};
 use codec::Codec;
 
 use crate::AppEvent;
@@ -30,6 +35,7 @@ use crate::AppEvent;
 pub(crate) struct VideoSource {
     device: AirPlayVideoDevice,
     receiver: Receiver<VideoCommand>,
+    sender: Sender<VideoCommand>,
     pipeline: Option<VideoPipeline>,
     window_handle: Option<u64>,
     video_backend: VideoBackend,
@@ -40,12 +46,18 @@ impl VideoSource {
         window: &Window,
         proxy: EventLoopProxy<AppEvent>,
         video_backend: VideoBackend,
+        capture_path: Option<&Path>,
     ) -> Self {
         let handle = native_window_handle(window);
         let (sender, receiver) = mpsc::channel();
+        let capture = capture_path
+            .map(CaptureWriter::create)
+            .transpose()
+            .unwrap_or_else(|error| panic!("failed to create video capture: {error}"));
         Self {
-            device: AirPlayVideoDevice::new(sender, proxy),
+            device: AirPlayVideoDevice::new(sender.clone(), proxy, capture),
             receiver,
+            sender,
             pipeline: None,
             window_handle: Some(handle as u64),
             video_backend,
@@ -93,17 +105,63 @@ impl VideoSource {
             pipeline.stop();
         }
     }
+
+    pub(crate) fn start_replay(
+        &self,
+        path: PathBuf,
+        proxy: EventLoopProxy<AppEvent>,
+    ) -> JoinHandle<()> {
+        let sender = self.sender.clone();
+
+        std::thread::spawn(move || {
+            let packets = match capture::read_capture(&path) {
+                Ok(packets) => packets,
+                Err(error) => {
+                    eprintln!("failed to read video capture '{}': {error}", path.display());
+                    return;
+                }
+            };
+            eprintln!(
+                "replaying {} captured video packets from '{}'",
+                packets.len(),
+                path.display()
+            );
+
+            let replay_started_at = Instant::now();
+            for packet in packets {
+                let target = replay_started_at + packet.elapsed;
+                let now = Instant::now();
+                if target > now {
+                    std::thread::sleep(target - now);
+                }
+
+                if sender.send(VideoCommand::from(packet)).is_err() {
+                    break;
+                }
+                let _ = proxy.send_event(AppEvent::VideoCommandQueued);
+            }
+        })
+    }
 }
 
 #[derive(Clone)]
 pub(crate) struct AirPlayVideoDevice {
     sender: Sender<VideoCommand>,
     proxy: EventLoopProxy<AppEvent>,
+    capture: Option<CaptureWriter>,
 }
 
 impl AirPlayVideoDevice {
-    fn new(sender: Sender<VideoCommand>, proxy: EventLoopProxy<AppEvent>) -> Self {
-        Self { sender, proxy }
+    fn new(
+        sender: Sender<VideoCommand>,
+        proxy: EventLoopProxy<AppEvent>,
+        capture: Option<CaptureWriter>,
+    ) -> Self {
+        Self {
+            sender,
+            proxy,
+            capture,
+        }
     }
 }
 
@@ -122,6 +180,7 @@ impl Device for AirPlayVideoDevice {
             id,
             sender: self.sender.clone(),
             proxy: self.proxy.clone(),
+            capture: self.capture.clone(),
         })
     }
 }
@@ -132,6 +191,7 @@ pub(crate) struct AirPlayVideoStream {
     id: u64,
     sender: Sender<VideoCommand>,
     proxy: EventLoopProxy<AppEvent>,
+    capture: Option<CaptureWriter>,
 }
 
 impl Stream for AirPlayVideoStream {
@@ -155,19 +215,33 @@ impl Stream for AirPlayVideoStream {
 impl AirPlayVideoStream {
     fn handle_packet(&self, packet: VideoPacket) -> Result<(), VideoError> {
         match packet.kind {
-            PacketKind::AvcC => self.send_command(VideoCommand::Configure {
-                codec: Codec::H264,
-                codec_data: packet.payload.to_vec(),
-            }),
-            PacketKind::HvcC => self.send_command(VideoCommand::Configure {
-                codec: Codec::H265,
-                codec_data: packet.payload.to_vec(),
-            }),
+            PacketKind::AvcC => {
+                self.record(CapturePacketKind::AvcC, packet.payload.as_ref())?;
+                self.send_command(VideoCommand::Configure {
+                    codec: Codec::H264,
+                    codec_data: packet.payload.to_vec(),
+                })
+            }
+            PacketKind::HvcC => {
+                self.record(CapturePacketKind::HvcC, packet.payload.as_ref())?;
+                self.send_command(VideoCommand::Configure {
+                    codec: Codec::H265,
+                    codec_data: packet.payload.to_vec(),
+                })
+            }
             PacketKind::Payload => {
+                self.record(CapturePacketKind::Payload, packet.payload.as_ref())?;
                 self.send_command(VideoCommand::Payload(packet.payload.to_vec()))
             }
             PacketKind::Plist | PacketKind::Other(_) => Ok(()),
         }
+    }
+
+    fn record(&self, kind: CapturePacketKind, payload: &[u8]) -> Result<(), VideoError> {
+        if let Some(capture) = self.capture.as_ref() {
+            capture.record(kind, payload)?;
+        }
+        Ok(())
     }
 
     fn send_command(&self, command: VideoCommand) -> Result<(), VideoError> {
@@ -182,6 +256,22 @@ impl AirPlayVideoStream {
 enum VideoCommand {
     Configure { codec: Codec, codec_data: Vec<u8> },
     Payload(Vec<u8>),
+}
+
+impl From<capture::CapturedPacket> for VideoCommand {
+    fn from(packet: capture::CapturedPacket) -> Self {
+        match packet.kind {
+            CapturePacketKind::AvcC => Self::Configure {
+                codec: Codec::H264,
+                codec_data: packet.payload,
+            },
+            CapturePacketKind::HvcC => Self::Configure {
+                codec: Codec::H265,
+                codec_data: packet.payload,
+            },
+            CapturePacketKind::Payload => Self::Payload(packet.payload),
+        }
+    }
 }
 
 enum VideoPipeline {
@@ -345,6 +435,12 @@ impl fmt::Display for VideoError {
 }
 
 impl Error for VideoError {}
+
+impl From<std::io::Error> for VideoError {
+    fn from(error: std::io::Error) -> Self {
+        Self::new(error.to_string())
+    }
+}
 
 fn native_window_handle(window: &Window) -> usize {
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
