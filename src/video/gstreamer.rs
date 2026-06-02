@@ -15,18 +15,10 @@ impl GStreamerPipeline {
         use gstreamer::prelude::*;
         use gstreamer_video::prelude::VideoOverlayExtManual;
 
-        init_gstreamer().expect("failed to initialize GStreamer");
+        init_gstreamer(codec).expect("failed to initialize GStreamer");
         register_android_gstreamer_plugins();
 
-        let pipeline = gst::parse::launch(&format!(
-            "appsrc name=airplay_src is-live=true format=time do-timestamp=true block=true \
-             ! {} disable-passthrough=true \
-             ! vtdec_hw \
-             ! video/x-raw(memory:GLMemory),format=NV12,texture-target=rectangle \
-             ! glcolorconvert \
-             ! glimagesink name=video_sink sync=false force-aspect-ratio=true",
-            codec.parser_name(),
-        ))?
+        let pipeline = gst::parse::launch(&pipeline_description(codec))?
         .downcast::<gst::Pipeline>()
         .map_err(|_| VideoError::new("GStreamer launch did not create a pipeline"))?;
 
@@ -105,18 +97,24 @@ fn gst_buffer_from_slice(data: &[u8]) -> Result<gstreamer::Buffer, VideoError> {
     Ok(buffer)
 }
 
-fn init_gstreamer() -> Result<(), VideoError> {
+fn init_gstreamer(codec: Codec) -> Result<(), VideoError> {
     gstreamer::init()?;
 
-    for element in [
+    let mut elements = vec![
         "appsrc",
         "h264parse",
         "h265parse",
-        "vtdec_hw",
         "capsfilter",
         "glcolorconvert",
         "glimagesink",
-    ] {
+    ];
+    if cfg!(target_os = "macos") && matches!(codec, Codec::H265) {
+        elements.extend(["avdec_h265", "videoconvert"]);
+    } else {
+        elements.push("vtdec_hw");
+    }
+
+    for element in elements {
         if gstreamer::ElementFactory::find(element).is_none() {
             return Err(VideoError::new(format!(
                 "required GStreamer element '{element}' is missing"
@@ -125,6 +123,28 @@ fn init_gstreamer() -> Result<(), VideoError> {
     }
 
     Ok(())
+}
+
+fn pipeline_description(codec: Codec) -> String {
+    let parser = codec.parser_name();
+    if cfg!(target_os = "macos") && matches!(codec, Codec::H265) {
+        format!(
+            "appsrc name=airplay_src is-live=true format=time do-timestamp=true block=true \
+             ! {parser} disable-passthrough=true \
+             ! avdec_h265 \
+             ! videoconvert \
+             ! glimagesink name=video_sink sync=false force-aspect-ratio=true"
+        )
+    } else {
+        format!(
+            "appsrc name=airplay_src is-live=true format=time do-timestamp=true block=true \
+             ! {parser} disable-passthrough=true \
+             ! vtdec_hw \
+             ! video/x-raw(memory:GLMemory),format=NV12,texture-target=rectangle \
+             ! glcolorconvert \
+             ! glimagesink name=video_sink sync=false force-aspect-ratio=true"
+        )
+    }
 }
 
 #[cfg(target_os = "android")]
