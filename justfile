@@ -9,6 +9,9 @@ run-desktop:
 check-desktop:
     cargo check
 
+build-airplayvtdec:
+    vendor/gstreamer/airplayvtdec/build.sh
+
 build-android: _android
     PKG_CONFIG_PATH="{{android_pkg_config_path}}" cargo apk build --lib
 

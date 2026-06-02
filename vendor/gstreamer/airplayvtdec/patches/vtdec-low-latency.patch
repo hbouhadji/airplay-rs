@@ -1,0 +1,57 @@
+diff --git a/vtdec.c b/vtdec.c
+index 35b75b7..6d61d7f 100644
+--- a/vtdec.c
++++ b/vtdec.c
+@@ -2040,27 +2040,13 @@ static gboolean
+ compute_hevc_decode_picture_buffer_size (GstVtdec * vtdec,
+     GstBuffer * codec_data, int *length)
+ {
+-  /* This value should be level dependent (table A.8)
+-   * but let's assume the maximum possible one for simplicity. */
+-  const gint max_luma_ps = 35651584;
+-  const gint max_dpb_pic_buf = 6;
+-  gint max_dbp_size, pic_size_samples_y;
+-
+-  if (vtdec->video_info.width == 0 || vtdec->video_info.height == 0)
+-    return FALSE;
+-
+-  /* A.4.2 */
+-  pic_size_samples_y = vtdec->video_info.width * vtdec->video_info.height;
+-  if (pic_size_samples_y <= (max_luma_ps >> 2))
+-    max_dbp_size = max_dpb_pic_buf * 4;
+-  else if (pic_size_samples_y <= (max_luma_ps >> 1))
+-    max_dbp_size = max_dpb_pic_buf * 2;
+-  else if (pic_size_samples_y <= ((3 * max_luma_ps) >> 2))
+-    max_dbp_size = (max_dpb_pic_buf * 4) / 3;
+-  else
+-    max_dbp_size = max_dpb_pic_buf;
+-
+-  *length = MIN (max_dbp_size, 16);
++  /* AirPlay mirroring sends low-delay HEVC for this application.  The
++   * upstream applemedia vtdec uses a conservative HEVC DPB estimate here,
++   * which forces the output loop to hold about 17 frames even when the SPS
++   * advertises sps_max_num_reorder_pics = 0.  This specialized element keeps
++   * the reorder threshold at zero so decoded frames are pushed immediately.
++   */
++  *length = 0;
+   return TRUE;
+ }
+ 
+@@ -2326,7 +2312,7 @@ gst_vtdec_register_vtdec (GstPlugin * plugin)
+     rank = GST_RANK_SECONDARY;
+ #endif
+ 
+-  return gst_element_register (plugin, "vtdec", rank, GST_TYPE_VTDEC);
++  return gst_element_register (plugin, "airplayvtdec", rank, GST_TYPE_VTDEC);
+ }
+ 
+ #if !TARGET_OS_WATCH
+@@ -2340,7 +2326,7 @@ gst_vtdec_register_vtdec_hw (GstPlugin * plugin)
+ #else
+   if (__builtin_available (macOS 10.9, iOS 17.0, tvOS 17.0, visionOS 1.0, *)) {
+ #endif
+-    return gst_element_register (plugin, "vtdec_hw", GST_RANK_PRIMARY + 1,
++    return gst_element_register (plugin, "airplayvtdec_hw", GST_RANK_PRIMARY + 1,
+         GST_TYPE_VTDEC_HW);
+   }
+ 

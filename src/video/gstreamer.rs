@@ -15,7 +15,7 @@ impl GStreamerPipeline {
         use gstreamer::prelude::*;
         use gstreamer_video::prelude::VideoOverlayExtManual;
 
-        init_gstreamer(codec).expect("failed to initialize GStreamer");
+        init_gstreamer().expect("failed to initialize GStreamer");
         register_android_gstreamer_plugins();
 
         let pipeline = gst::parse::launch(&pipeline_description(codec))?
@@ -97,8 +97,9 @@ fn gst_buffer_from_slice(data: &[u8]) -> Result<gstreamer::Buffer, VideoError> {
     Ok(buffer)
 }
 
-fn init_gstreamer(codec: Codec) -> Result<(), VideoError> {
+fn init_gstreamer() -> Result<(), VideoError> {
     gstreamer::init()?;
+    scan_embedded_plugins()?;
 
     let mut elements = vec![
         "appsrc",
@@ -108,8 +109,8 @@ fn init_gstreamer(codec: Codec) -> Result<(), VideoError> {
         "glcolorconvert",
         "glimagesink",
     ];
-    if cfg!(target_os = "macos") && matches!(codec, Codec::H265) {
-        elements.extend(["avdec_h265", "videoconvert"]);
+    if cfg!(target_os = "macos") {
+        elements.push("airplayvtdec_hw");
     } else {
         elements.push("vtdec_hw");
     }
@@ -127,12 +128,13 @@ fn init_gstreamer(codec: Codec) -> Result<(), VideoError> {
 
 fn pipeline_description(codec: Codec) -> String {
     let parser = codec.parser_name();
-    if cfg!(target_os = "macos") && matches!(codec, Codec::H265) {
+    if cfg!(target_os = "macos") {
         format!(
             "appsrc name=airplay_src is-live=true format=time do-timestamp=true block=true \
              ! {parser} disable-passthrough=true \
-             ! avdec_h265 \
-             ! videoconvert \
+             ! airplayvtdec_hw \
+             ! video/x-raw(memory:GLMemory),format=NV12,texture-target=rectangle \
+             ! glcolorconvert \
              ! glimagesink name=video_sink sync=false force-aspect-ratio=true"
         )
     } else {
@@ -145,6 +147,29 @@ fn pipeline_description(codec: Codec) -> String {
              ! glimagesink name=video_sink sync=false force-aspect-ratio=true"
         )
     }
+}
+
+fn scan_embedded_plugins() -> Result<(), VideoError> {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        let plugin_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("vendor/gstreamer/plugins/macos-aarch64");
+        if !plugin_dir.exists() {
+            return Err(VideoError::new(format!(
+                "missing embedded GStreamer plugin directory '{}'; run 'just build-airplayvtdec'",
+                plugin_dir.display()
+            )));
+        }
+
+        if !gstreamer::Registry::get().scan_path(&plugin_dir) {
+            return Err(VideoError::new(format!(
+                "failed to scan embedded GStreamer plugin directory '{}'",
+                plugin_dir.display()
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(target_os = "android")]
