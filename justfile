@@ -12,6 +12,9 @@ check-desktop:
 build-airplayvtdec:
     vendor/gstreamer/airplayvtdec/build.sh
 
+measure-gst-latency capture="/tmp/airplay.cap":
+    scripts/measure-gst-latency.sh "{{capture}}"
+
 build-android: _android
     PKG_CONFIG_PATH="{{android_pkg_config_path}}" cargo apk build --lib
 

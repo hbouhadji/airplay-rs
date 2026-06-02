@@ -110,7 +110,9 @@ fn init_gstreamer() -> Result<(), VideoError> {
         "glimagesink",
     ];
     if cfg!(target_os = "macos") {
-        elements.push("airplayvtdec_hw");
+        let decoder = macos_decoder();
+        elements.push(decoder.element_name());
+        elements.extend(decoder.extra_element_names());
     } else {
         elements.push("vtdec_hw");
     }
@@ -129,14 +131,7 @@ fn init_gstreamer() -> Result<(), VideoError> {
 fn pipeline_description(codec: Codec) -> String {
     let parser = codec.parser_name();
     if cfg!(target_os = "macos") {
-        format!(
-            "appsrc name=airplay_src is-live=true format=time do-timestamp=true block=true \
-             ! {parser} disable-passthrough=true \
-             ! airplayvtdec_hw \
-             ! video/x-raw(memory:GLMemory),format=NV12,texture-target=rectangle \
-             ! glcolorconvert \
-             ! glimagesink name=video_sink sync=false force-aspect-ratio=true"
-        )
+        macos_decoder().pipeline_description(parser)
     } else {
         format!(
             "appsrc name=airplay_src is-live=true format=time do-timestamp=true block=true \
@@ -146,6 +141,65 @@ fn pipeline_description(codec: Codec) -> String {
              ! glcolorconvert \
              ! glimagesink name=video_sink sync=false force-aspect-ratio=true"
         )
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+enum MacosDecoder {
+    AirplayVtdecHw,
+    VtdecHw,
+    AvdecH265,
+}
+
+#[cfg(target_os = "macos")]
+impl MacosDecoder {
+    fn element_name(self) -> &'static str {
+        match self {
+            Self::AirplayVtdecHw => "airplayvtdec_hw",
+            Self::VtdecHw => "vtdec_hw",
+            Self::AvdecH265 => "avdec_h265",
+        }
+    }
+
+    fn extra_element_names(self) -> &'static [&'static str] {
+        match self {
+            Self::AvdecH265 => &["videoconvert"],
+            Self::AirplayVtdecHw | Self::VtdecHw => &[],
+        }
+    }
+
+    fn pipeline_description(self, parser: &str) -> String {
+        let decoder = self.element_name();
+        match self {
+            Self::AvdecH265 => format!(
+                "appsrc name=airplay_src is-live=true format=time do-timestamp=true block=true \
+                 ! {parser} disable-passthrough=true \
+                 ! {decoder} \
+                 ! videoconvert \
+                 ! glimagesink name=video_sink sync=false force-aspect-ratio=true"
+            ),
+            Self::AirplayVtdecHw | Self::VtdecHw => format!(
+                "appsrc name=airplay_src is-live=true format=time do-timestamp=true block=true \
+                 ! {parser} disable-passthrough=true \
+                 ! {decoder} \
+                 ! video/x-raw(memory:GLMemory),format=NV12,texture-target=rectangle \
+                 ! glcolorconvert \
+                 ! glimagesink name=video_sink sync=false force-aspect-ratio=true"
+            ),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_decoder() -> MacosDecoder {
+    match std::env::var("AIRPLAY_GST_DECODER").as_deref() {
+        Ok("vtdec_hw") => MacosDecoder::VtdecHw,
+        Ok("avdec_h265") => MacosDecoder::AvdecH265,
+        Ok("airplayvtdec_hw") | Err(_) => MacosDecoder::AirplayVtdecHw,
+        Ok(value) => panic!(
+            "unsupported AIRPLAY_GST_DECODER='{value}'; expected airplayvtdec_hw, vtdec_hw, or avdec_h265"
+        ),
     }
 }
 
@@ -161,7 +215,9 @@ fn scan_embedded_plugins() -> Result<(), VideoError> {
             )));
         }
 
-        if !gstreamer::Registry::get().scan_path(&plugin_dir) {
+        if !gstreamer::Registry::get().scan_path(&plugin_dir)
+            && gstreamer::ElementFactory::find("airplayvtdec_hw").is_none()
+        {
             return Err(VideoError::new(format!(
                 "failed to scan embedded GStreamer plugin directory '{}'",
                 plugin_dir.display()
