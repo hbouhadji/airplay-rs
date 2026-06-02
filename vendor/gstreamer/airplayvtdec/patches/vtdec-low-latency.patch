@@ -1,43 +1,100 @@
 diff --git a/vtdec.c b/vtdec.c
-index 35b75b7..6d61d7f 100644
+index 35b75b7..880849c 100644
 --- a/vtdec.c
 +++ b/vtdec.c
-@@ -2040,27 +2040,13 @@ static gboolean
+@@ -1940,6 +1940,27 @@ parse_h264_decoder_config_record (GstVtdec * vtdec, GstBuffer * codec_data,
+   return ret;
+ }
+-
++
++static gboolean
++parse_h265_decoder_config_record (GstVtdec * vtdec, GstBuffer * codec_data,
++    GstH265DecoderConfigRecord ** config)
++{
++  GstH265Parser *parser = gst_h265_parser_new ();
++  GstMapInfo map;
++  gboolean ret = TRUE;
++
++  gst_buffer_map (codec_data, &map, GST_MAP_READ);
++
++  if (gst_h265_parser_parse_decoder_config_record (parser, map.data, map.size,
++          config) != GST_H265_PARSER_OK) {
++    GST_WARNING_OBJECT (vtdec, "Failed to parse HEVC codec-data");
++    ret = FALSE;
++  }
++
++  gst_h265_parser_free (parser);
++  gst_buffer_unmap (codec_data, &map);
++  return ret;
++}
++
+ static gboolean
+ get_h264_dpb_size_from_sps (GstVtdec * vtdec, GstH264NalUnit * nalu,
+     gint * dpb_size)
+@@ -2040,11 +2061,60 @@ static gboolean
  compute_hevc_decode_picture_buffer_size (GstVtdec * vtdec,
      GstBuffer * codec_data, int *length)
  {
 -  /* This value should be level dependent (table A.8)
 -   * but let's assume the maximum possible one for simplicity. */
--  const gint max_luma_ps = 35651584;
--  const gint max_dpb_pic_buf = 6;
--  gint max_dbp_size, pic_size_samples_y;
--
--  if (vtdec->video_info.width == 0 || vtdec->video_info.height == 0)
--    return FALSE;
--
--  /* A.4.2 */
--  pic_size_samples_y = vtdec->video_info.width * vtdec->video_info.height;
--  if (pic_size_samples_y <= (max_luma_ps >> 2))
--    max_dbp_size = max_dpb_pic_buf * 4;
--  else if (pic_size_samples_y <= (max_luma_ps >> 1))
--    max_dbp_size = max_dpb_pic_buf * 2;
--  else if (pic_size_samples_y <= ((3 * max_luma_ps) >> 2))
--    max_dbp_size = (max_dpb_pic_buf * 4) / 3;
--  else
--    max_dbp_size = max_dpb_pic_buf;
--
--  *length = MIN (max_dbp_size, 16);
-+  /* AirPlay mirroring sends low-delay HEVC for this application.  The
-+   * upstream applemedia vtdec uses a conservative HEVC DPB estimate here,
-+   * which forces the output loop to hold about 17 frames even when the SPS
-+   * advertises sps_max_num_reorder_pics = 0.  This specialized element keeps
-+   * the reorder threshold at zero so decoded frames are pushed immediately.
-+   */
+   const gint max_luma_ps = 35651584;
+   const gint max_dpb_pic_buf = 6;
++  GstH265DecoderConfigRecord *config = NULL;
+   gint max_dbp_size, pic_size_samples_y;
++  gboolean found_sps = FALSE;
++  guint i, j;
++
 +  *length = 0;
-   return TRUE;
- }
++
++  if (parse_h265_decoder_config_record (vtdec, codec_data, &config)) {
++    for (i = 0; i < config->nalu_array->len; i++) {
++      GstH265DecoderConfigRecordNalUnitArray *array =
++          &g_array_index (config->nalu_array,
++          GstH265DecoderConfigRecordNalUnitArray, i);
++
++      if (array->nal_unit_type != GST_H265_NAL_SPS)
++        continue;
++
++      for (j = 0; j < array->nalu->len; j++) {
++        GstH265Parser *parser = gst_h265_parser_new ();
++        GstH265NalUnit *nalu =
++            &g_array_index (array->nalu, GstH265NalUnit, j);
++        GstH265SPS sps;
++        GstH265ParserResult result;
++        gint reorder_size;
++
++        result = gst_h265_parser_parse_sps (parser, nalu, &sps, FALSE);
++        gst_h265_parser_free (parser);
++
++        if (result != GST_H265_PARSER_OK) {
++          GST_WARNING_OBJECT (vtdec, "Failed to parse HEVC SPS");
++          continue;
++        }
++
++        reorder_size =
++            sps.max_num_reorder_pics[sps.max_sub_layers_minus1];
++        GST_INFO_OBJECT (vtdec,
++            "parsed HEVC SPS max_num_reorder_pics %d", reorder_size);
++
++        *length = MAX (*length, reorder_size);
++        found_sps = TRUE;
++      }
++    }
++
++    gst_h265_decoder_config_record_free (config);
++
++    if (found_sps)
++      return TRUE;
++  }
++
++  /* Fallback to the upstream conservative estimate if codec-data does not
++   * carry a parseable SPS. AirPlay mirroring normally advertises
++   * sps_max_num_reorder_pics = 0, so valid streams still push immediately.
++   */
  
-@@ -2326,7 +2312,7 @@ gst_vtdec_register_vtdec (GstPlugin * plugin)
+   if (vtdec->video_info.width == 0 || vtdec->video_info.height == 0)
+     return FALSE;
+@@ -2326,7 +2396,7 @@ gst_vtdec_register_vtdec (GstPlugin * plugin)
      rank = GST_RANK_SECONDARY;
  #endif
  
@@ -46,7 +103,7 @@ index 35b75b7..6d61d7f 100644
  }
  
  #if !TARGET_OS_WATCH
-@@ -2340,7 +2326,7 @@ gst_vtdec_register_vtdec_hw (GstPlugin * plugin)
+@@ -2340,7 +2410,7 @@ gst_vtdec_register_vtdec_hw (GstPlugin * plugin)
  #else
    if (__builtin_available (macOS 10.9, iOS 17.0, tvOS 17.0, visionOS 1.0, *)) {
  #endif
@@ -55,3 +112,16 @@ index 35b75b7..6d61d7f 100644
          GST_TYPE_VTDEC_HW);
    }
  
+diff --git a/vtdec.h b/vtdec.h
+index 8fd7a8a..b933ced 100644
+--- a/vtdec.h
++++ b/vtdec.h
+@@ -33,6 +33,7 @@
+ #include <gst/vulkan/vulkan.h>
+ #endif
+ #include <gst/codecparsers/gsth264parser.h>
++#include <gst/codecparsers/gsth265parser.h>
+ #include <gst/codecparsers/gstav1parser.h>
+-
++
+ G_BEGIN_DECLS

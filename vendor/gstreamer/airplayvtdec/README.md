@@ -7,10 +7,12 @@ and builds a small standalone plugin that registers `airplayvtdec` and
 `airplayvtdec_hw` instead of `vtdec` and `vtdec_hw`.
 
 The HEVC DPB calculation is intentionally patched for AirPlay mirroring:
-`compute_hevc_decode_picture_buffer_size()` returns `0`, so the output loop
-does not hold the conservative 16-frame reorder queue used by upstream
-`vtdec`. This matches the captured AirPlay HEVC stream, whose SPS advertises
-`sps_max_num_reorder_pics = 0`.
+`compute_hevc_decode_picture_buffer_size()` parses the HEVC SPS and uses
+`sps_max_num_reorder_pics` as the reorder queue threshold. This avoids the
+conservative 16-frame queue used by upstream `vtdec` for valid low-delay
+streams while keeping the upstream estimate as a fallback when no SPS can be
+parsed. The captured AirPlay HEVC stream advertises
+`sps_max_num_reorder_pics = 0`, so decoded frames are pushed immediately.
 
 The standalone build files are:
 
